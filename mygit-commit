@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""
+mygit-commit: Save a snapshot of the index as a commit, with optional auto-stage.
+
+Usage: mygit-commit [-a] -m message
+"""
+import os
+import sys
+import shutil
+
+def main():
+    # Check usage first
+    args = sys.argv
+    auto_stage = False
+    if len(args) == 4 and args[1] == '-a' and args[2] == '-m':
+        auto_stage = True
+        message = args[3]
+    elif len(args) == 3 and args[1] == '-m':
+        message = args[2]
+    else:
+        print('usage: mygit-commit [-a] -m message')
+        sys.exit(1)
+
+    repo_dir    = '.mygit'
+    commits_dir = os.path.join(repo_dir, 'commits')
+    index_dir   = os.path.join(repo_dir, 'index')
+
+    # Ensure repository exists
+    if not os.path.isdir(repo_dir):
+        print('mygit-commit: error: mygit repository directory .mygit not found')
+        sys.exit(1)
+
+    # If -a, update index with current working files for all tracked entries
+    if auto_stage and os.path.isdir(index_dir):
+        for root, _, files in os.walk(index_dir):
+            rel_dir = os.path.relpath(root, index_dir)
+            for fname in files:
+                idx_path = os.path.join(root, fname)
+                # Determine corresponding working-dir path
+                wd_path = os.path.join(rel_dir, fname) if rel_dir != '.' else fname
+                if os.path.isfile(wd_path):
+                    try:
+                        shutil.copy2(wd_path, idx_path)
+                    except Exception:
+                        print(f'mygit-commit: error: could not auto-stage {wd_path}')
+                        sys.exit(1)
+
+    # Prepare commits directory
+    os.makedirs(commits_dir, exist_ok=True)
+
+    # Determine next commit number (starting from 0)
+    existing = [int(n) for n in os.listdir(commits_dir) if n.isdigit()]
+    new_num = max(existing) + 1 if existing else 0
+
+    # Check for "nothing to commit"
+    if new_num > 0:
+        prev_dir = os.path.join(commits_dir, str(new_num - 1))
+
+        def gather(base):
+            files = set()
+            for r, _, fnames in os.walk(base):
+                for f in fnames:
+                    if f == 'message' and os.path.abspath(r) == os.path.abspath(base):
+                        continue
+                    rel = os.path.relpath(os.path.join(r, f), base)
+                    files.add(rel)
+            return files
+
+        idx_files  = gather(index_dir) if os.path.isdir(index_dir) else set()
+        prev_files = gather(prev_dir)
+
+        if idx_files == prev_files:
+            same = True
+            for rel in idx_files:
+                with open(os.path.join(index_dir, rel), 'rb') as f1, \
+                     open(os.path.join(prev_dir, rel), 'rb') as f2:
+                    if f1.read() != f2.read():
+                        same = False
+                        break
+            if same:
+                print('nothing to commit')
+                sys.exit(0)
+
+    # Create the new commit directory
+    new_commit_dir = os.path.join(commits_dir, str(new_num))
+    os.makedirs(new_commit_dir)
+
+    # Copy all files from index into the new commit
+    if os.path.isdir(index_dir):
+        for root, _, files in os.walk(index_dir):
+            for fname in files:
+                rel_dir = os.path.relpath(root, index_dir)
+                dest_dir = os.path.join(new_commit_dir, rel_dir) if rel_dir != '.' else new_commit_dir
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.copy2(os.path.join(root, fname),
+                             os.path.join(dest_dir, fname))
+
+    # Write commit message
+    with open(os.path.join(new_commit_dir, 'message'), 'w') as f:
+        f.write(message)
+    
+    head_path = os.path.join(repo_dir, 'HEAD')
+    try:
+        with open(head_path) as h:
+            current_branch = h.read().strip()
+        branch_ref = os.path.join(repo_dir, 'branches', current_branch)
+        with open(branch_ref, 'w') as b:
+            b.write(str(new_num))
+    except Exception:
+        pass
+
+
+    # Confirmation output
+    print(f'Committed as commit {new_num}')
+
+if __name__ == '__main__':
+    main()

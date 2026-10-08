@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""
+mygit-checkout: Switch branches in MyGit.
+
+Usage: mygit-checkout branch-name
+"""
+import os
+import sys
+import shutil
+
+REPO_DIR = '.mygit'
+
+
+def die(msg, code=1):
+    print(msg)
+    sys.exit(code)
+
+
+def ensure_repo():
+    if not os.path.isdir(REPO_DIR):
+        die('mygit-checkout: error: mygit repository directory .mygit not found')
+
+
+def read_text(path):
+    """Read text from a file. Return None on failure."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def read_bytes(path):
+    """Read bytes from a file. Return None on failure."""
+    try:
+        with open(path, 'rb') as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def list_tracked_files(commit_dir):
+    """
+    Return a set of tracked file paths in a commit snapshot directory.
+    The special file 'message' is ignored.
+    """
+    files = set()
+    if commit_dir and os.path.isdir(commit_dir):
+        for root, _, filenames in os.walk(commit_dir):
+            for name in filenames:
+                rel = os.path.relpath(os.path.join(root, name), commit_dir)
+                if rel == 'message':
+                    continue
+                files.add(rel)
+    return files
+
+
+def iter_working_files():
+    """
+    Iterate over regular files in the working directory (recursively),
+    skipping anything under .mygit/.
+    """
+    for root, _, filenames in os.walk('.'):
+        rel_root = os.path.relpath(root, '.')
+        parts = rel_root.split(os.sep)
+        if parts and parts[0] == '.mygit':
+            continue
+        for name in filenames:
+            rel = os.path.relpath(os.path.join(root, name), '.')
+            if rel.startswith('.mygit' + os.sep):
+                continue
+            yield rel
+
+
+def safe_makedirs(path):
+    """Create parent directories for a file path if needed."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+
+
+def clear_dir(dirpath):
+    """Remove all contents of a directory; create it if missing."""
+    if os.path.isdir(dirpath):
+        for root, dirs, files in os.walk(dirpath, topdown=False):
+            for f in files:
+                try:
+                    os.remove(os.path.join(root, f))
+                except Exception:
+                    pass
+            for d in dirs:
+                try:
+                    os.rmdir(os.path.join(root, d))
+                except Exception:
+                    pass
+    else:
+        os.makedirs(dirpath, exist_ok=True)
+
+
+def copy_selected(src_base, dst_base, rel_paths):
+    """Copy selected relative paths from src_base to dst_base."""
+    for rel in sorted(rel_paths):
+        src = os.path.join(src_base, rel)
+        dst = os.path.join(dst_base, rel)
+        safe_makedirs(dst)
+        shutil.copy2(src, dst)
+
+
+def main():
+    # 1. Usage
+    if len(sys.argv) != 2:
+        print('usage: mygit-checkout branch-name')
+        sys.exit(1)
+    target_branch = sys.argv[1]
+
+    # 2. Repo layout
+    ensure_repo()
+    branches_dir = os.path.join(REPO_DIR, 'branches')
+    commits_dir = os.path.join(REPO_DIR, 'commits')
+    index_dir = os.path.join(REPO_DIR, 'index')
+    head_file = os.path.join(REPO_DIR, 'HEAD')
+
+    # 3. Resolve current and target
+    current_branch = (read_text(head_file) or '').strip()
+    target_ref = os.path.join(branches_dir, target_branch)
+    if not os.path.isfile(target_ref):
+        die(f"mygit-checkout: error: unknown branch '{target_branch}'")
+
+    old_ref = os.path.join(branches_dir, current_branch) if current_branch else None
+    old_commit = (read_text(old_ref) or '').strip() if old_ref and os.path.isfile(old_ref) else ''
+    new_commit = (read_text(target_ref) or '').strip()
+
+    same_commit = (old_commit == new_commit)
+
+    old_dir = os.path.join(commits_dir, old_commit) if old_commit else None
+    new_dir = os.path.join(commits_dir, new_commit) if new_commit else None
+
+    old_tracked = list_tracked_files(old_dir)
+    new_tracked = list_tracked_files(new_dir)
+
+    # 4. Compute the paths that checkout would actually touch
+    deletes = old_tracked - new_tracked  # tracked -> untracked (delete)
+    creates = new_tracked - old_tracked  # untracked -> tracked (create/write)
+    updates = set()  # tracked in both, content differs
+    for rel in (old_tracked & new_tracked):
+        if read_bytes(os.path.join(old_dir, rel)) != read_bytes(os.path.join(new_dir, rel)):
+            updates.add(rel)
+    impacted = deletes | creates | updates
+
+    # 5. Precheck: refuse only if local changes would be overwritten
+    def path_exists(p):
+        try:
+            return os.path.lexists(p)
+        except Exception:
+            return False
+
+    conflicts = []
+    for rel in sorted(impacted):
+        work = read_bytes(rel)  # None if missing
+        old = read_bytes(os.path.join(old_dir, rel)) if (old_dir and rel in old_tracked) else None
+        new = read_bytes(os.path.join(new_dir, rel)) if (new_dir and rel in new_tracked) else None
+
+        if rel in deletes:
+            # Would delete. Conflict if the tracked file was locally modified or locally deleted.
+            if work != old:
+                conflicts.append(rel)
+
+        elif rel in creates:
+            # Would create/overwrite a path. Conflict if ANYTHING already exists at that path.
+            if path_exists(rel):
+                conflicts.append(rel)
+
+        else:
+            # rel in updates: would write new bytes
+            # Conflict if local changes or local deletion.
+            # Allow no-op if work already equals the new bytes.
+            if work != old and not (new is not None and work == new):
+                conflicts.append(rel)
+
+    if conflicts:
+        print('mygit-checkout: error: Your changes to the following files would be overwritten by checkout:')
+        for rel in conflicts:
+            print(rel)
+        sys.exit(1)
+
+    # 6. Update HEAD (only after precheck passes)
+    try:
+        with open(head_file, 'w', encoding='utf-8') as f:
+            f.write(target_branch)
+    except Exception:
+        pass
+
+    # 7. Reset index:
+    # - If pointing to the same commit, keep index (to preserve staged changes).
+    # - Otherwise, reset index to the target snapshot.
+    if not same_commit:
+        clear_dir(index_dir)
+        if new_tracked and new_dir:
+            copy_selected(new_dir, index_dir, new_tracked)
+
+    # 8. Update working tree ONLY on impacted paths
+    # Deletes
+    for rel in sorted(deletes):
+        if os.path.isfile(rel):
+            try:
+                os.remove(rel)
+            except Exception:
+                pass
+    # Creates
+    if creates and new_dir:
+        copy_selected(new_dir, '.', creates)
+    # Updates
+    if updates and new_dir:
+        copy_selected(new_dir, '.', updates)
+
+    # 9. Done
+    print(f"Switched to branch '{target_branch}'")
+
+
+if __name__ == '__main__':
+    main()

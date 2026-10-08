@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""
+mygit-rm: Remove files from the working tree and/or from the index.
+
+Usage:
+  mygit-rm [--force] [--cached] <files>...
+"""
+import os
+import sys
+
+REPO_DIR = '.mygit'
+
+
+def die(msg, code=1):
+    print(msg)
+    sys.exit(code)
+
+
+def ensure_repo():
+    if not os.path.isdir(REPO_DIR):
+        die('mygit-rm: error: mygit repository directory .mygit not found')
+
+
+def read_files(base):
+    """Return a set of relative file paths under base (recursive)."""
+    files = set()
+    if base and os.path.isdir(base):
+        for root, _, names in os.walk(base):
+            for n in names:
+                rel = os.path.relpath(os.path.join(root, n), base)
+                files.add(rel)
+    return files
+
+
+def read_bytes(path):
+    """Read bytes; return None if missing or unreadable."""
+    try:
+        with open(path, 'rb') as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def resolve_repo_snapshot():
+    """
+    Resolve current repo snapshot directory:
+      1. HEAD -> branches/<HEAD> -> commit id
+      2. Fallback: latest numeric commit under .mygit/commits
+      3. None if no commits
+    """
+    commits_dir  = os.path.join(REPO_DIR, 'commits')
+    branches_dir = os.path.join(REPO_DIR, 'branches')
+    head_file    = os.path.join(REPO_DIR, 'HEAD')
+
+    commit_id = ''
+    # Try HEAD
+    try:
+        with open(head_file, 'r', encoding='utf-8') as f:
+            head_branch = f.read().strip()
+    except Exception:
+        head_branch = ''
+
+    if head_branch:
+        ref = os.path.join(branches_dir, head_branch)
+        try:
+            with open(ref, 'r', encoding='utf-8') as f:
+                commit_id = f.read().strip()
+        except Exception:
+            commit_id = ''
+
+    if commit_id:
+        return os.path.join(commits_dir, commit_id)
+
+    # Fallback to max numeric commit
+    if os.path.isdir(commits_dir):
+        nums = [int(n) for n in os.listdir(commits_dir) if n.isdigit()]
+        if nums:
+            return os.path.join(commits_dir, str(max(nums)))
+
+    return None
+
+
+def parse_args(argv):
+    force = False
+    cached = False
+    files = []
+    for a in argv:
+        if a == '--force':
+            force = True
+        elif a == '--cached':
+            cached = True
+        elif a.startswith('-'):
+            print('usage: mygit-rm [--force] [--cached] <files>...')
+            sys.exit(1)
+        else:
+            files.append(a)
+    if not files:
+        print('usage: mygit-rm [--force] [--cached] <files>...')
+        sys.exit(1)
+    return force, cached, files
+
+
+def main():
+    ensure_repo()
+    force, cached, files = parse_args(sys.argv[1:])
+
+    index_dir       = os.path.join(REPO_DIR, 'index')
+    repo_commit_dir = resolve_repo_snapshot()
+
+    repo_files = read_files(repo_commit_dir)
+    repo_files.discard('message')  # ignore commit message file
+    index_files = read_files(index_dir)
+
+    # -------- PRECHECK (atomic, no side effects) --------
+    for f in files:
+        in_idx  = f in index_files
+        in_repo = f in repo_files
+        idx_p   = os.path.join(index_dir, f)
+        repo_p  = os.path.join(repo_commit_dir, f) if repo_commit_dir else None
+
+        # 1. Base existence rules
+        if cached:
+            # --cached: must be in index
+            if not in_idx:
+                print(f"mygit-rm: error: '{f}' is not in the mygit repository")
+                sys.exit(1)
+        else:
+            if force:
+                # --force (non-cached): this assignment expects presence in INDEX only
+                if not in_idx:
+                    print(f"mygit-rm: error: '{f}' is not in the mygit repository")
+                    sys.exit(1)
+            else:
+                # normal rm: must be in index OR in repo
+                if not (in_idx or in_repo):
+                    print(f"mygit-rm: error: '{f}' is not in the mygit repository")
+                    sys.exit(1)
+
+        # 2. Content-based protections (order matters), only when NOT --force
+        if not force:
+            w_bytes = read_bytes(f)
+            i_bytes = read_bytes(idx_p) if in_idx else None
+            r_bytes = read_bytes(repo_p) if (repo_p and in_repo) else None
+
+            # Helper flags
+            w_eq_i = (w_bytes == i_bytes) if in_idx else False
+            w_eq_r = (w_bytes == r_bytes) if in_repo else False
+            i_eq_r = (i_bytes == r_bytes) if (in_idx and in_repo) else False
+
+            if not cached:
+                # Default mode (index + working tree)
+                # Case B: index != repo AND work != index  
+                if in_idx and in_repo and (not i_eq_r) and (not w_eq_i):
+                    print(f"mygit-rm: error: '{f}' in index is different to both the working file and the repository")
+                    sys.exit(1)
+                # Case C: index != repo AND work == index  
+                if in_idx and in_repo and (not i_eq_r) and w_eq_i:
+                    print(f"mygit-rm: error: '{f}' has staged changes in the index")
+                    sys.exit(1)
+                # Case D: staged new file (in index only) and work == index 
+                if in_idx and not in_repo and w_eq_i:
+                    print(f"mygit-rm: error: '{f}' has staged changes in the index")
+                    sys.exit(1)
+                # Case A: tracked in repo and work != repo  
+                # (only if not already caught by the above)
+                if in_repo and (not w_eq_r):
+                    print(f"mygit-rm: error: '{f}' in the repository is different to the working file")
+                    sys.exit(1)
+            else:
+                # --cached mode (remove from index only)
+                # Only one special error is required by tests:
+                # index != repo AND work != index  
+                if in_idx and in_repo:
+                    if (not i_eq_r) and (not w_eq_i):
+                        print(f"mygit-rm: error: '{f}' in index is different to both the working file and the repository")
+                        sys.exit(1)
+                # For --cached with staged changes (work == index != repo), removal is allowed.
+
+    # -------- APPLY CHANGES (after passing precheck) --------
+    if cached:
+        # Remove only from index
+        for f in files:
+            p = os.path.join(index_dir, f)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+    else:
+        # Remove from index and working tree
+        for f in files:
+            p_index = os.path.join(index_dir, f)
+            if os.path.isfile(p_index):
+                try:
+                    os.remove(p_index)
+                except Exception:
+                    pass
+            if os.path.isfile(f):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+    # No output on success
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""
+mygit-log: Print commit history.
+
+Usage: mygit-log
+"""
+import os
+import sys
+
+def main():
+    # Ensure no extra arguments
+    if len(sys.argv) != 1:
+        print('usage: mygit-log')
+        sys.exit(1)
+
+    # Ensure repository exists
+    repo_dir = '.mygit'
+    commits_dir = os.path.join(repo_dir, 'commits')
+    if not os.path.isdir(repo_dir):
+        print('mygit-log: error: mygit repository directory .mygit not found')
+        sys.exit(1)
+
+    # If no commits yet, do nothing
+    if not os.path.isdir(commits_dir):
+        return
+
+    # Collect and sort commit numbers
+    nums = []
+    for name in os.listdir(commits_dir):
+        if name.isdigit():
+            nums.append(int(name))
+    for num in sorted(nums, reverse=True):
+        msg_path = os.path.join(commits_dir, str(num), 'message')
+        try:
+            with open(msg_path) as f:
+                msg = f.read().strip()
+        except Exception:
+            msg = ''
+        print(f'{num} {msg}')
+
+if __name__ == '__main__':
+    main()

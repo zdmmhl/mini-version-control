@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""
+mygit-show: Print file contents from a specific commit or the index if commit omitted.
+
+Usage: mygit-show [commit:]filename
+"""
+import os
+import sys
+
+
+def main():
+    # Ensure no extra arguments
+    if len(sys.argv) != 2:
+        print('usage: mygit-show [commit:]filename')
+        sys.exit(1)
+
+    # Ensure repository exists
+    repo_dir = '.mygit'
+    if not os.path.isdir(repo_dir):
+        print('mygit-show: error: mygit repository directory .mygit not found')
+        sys.exit(1)
+
+    arg = sys.argv[1]
+    # Determine commit and filename
+    if ':' in arg:
+        commit_str, filename = arg.split(':', 1)
+        if commit_str == '':
+            commit = None
+        else:
+            if not commit_str.isdigit():
+                print('usage: mygit-show [commit:]filename')
+                sys.exit(1)
+            commit = int(commit_str)
+    else:
+        commit = None
+        filename = arg
+
+    # Validate filename
+    if '/' in filename or filename == '':
+        print('usage: mygit-show [commit:]filename')
+        sys.exit(1)
+
+    # Locate file
+    if commit is None:
+        path = os.path.join(repo_dir, 'index', filename)
+        if not os.path.isfile(path):
+            print(f"mygit-show: error: '{filename}' not found in index")
+            sys.exit(1)
+    else:
+        commit_dir = os.path.join(repo_dir, 'commits', str(commit))
+        if not os.path.isdir(commit_dir):
+            print(f"mygit-show: error: unknown commit '{commit}'")
+            sys.exit(1)
+        path = os.path.join(commit_dir, filename)
+        if not os.path.isfile(path):
+            print(f"mygit-show: error: '{filename}' not found in commit {commit}")
+            sys.exit(1)
+
+    # Print contents
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            sys.stdout.write(f.read())
+    except Exception:
+        print(f"mygit-show: error: can not open '{filename}'")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

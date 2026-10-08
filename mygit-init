@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""
+mygit-init: Creating an empty MyGit repository.
+
+Usage: mygit-init 
+"""
+import os
+import sys
+
+def main():
+    repo_dir = '.mygit'
+    # Check if repository already exists
+    try:
+        os.mkdir(repo_dir)
+    except FileExistsError:
+        print('mygit-init: error: .mygit already exists')
+        sys.exit(1)
+    except Exception:
+        print('mygit-init: error: cannot create directory .mygit', file=sys.stderr)
+        sys.exit(1)
+
+    # Initialization successful
+    print('Initialized empty mygit repository in .mygit')
+
+if __name__ == '__main__':
+    main()

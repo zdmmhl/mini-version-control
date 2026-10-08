@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""
+mygit-add: Add contents of one or more files to the MyGit index.
+
+Usage: mygit-add filenames...
+"""
+import os
+import sys
+import re
+import shutil
+
+def main():
+    # Define the MyGit repository directory
+    repo_dir = '.mygit'
+    if not os.path.isdir(repo_dir):
+        print('mygit-add: error: mygit repository directory .mygit not found')
+        sys.exit(1)
+
+    # Require at least one filename argument
+    if len(sys.argv) < 2:
+        print('usage: mygit-add filenames...')
+        sys.exit(1)
+
+    # Compile a regex to validate allowed filenames
+    pattern = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+    index_dir = os.path.join(repo_dir, 'index')
+
+    for filename in sys.argv[1:]:
+        # Validate filename format
+        if not pattern.match(filename):
+            print(f'mygit-add: error: invalid filename: {filename}')
+            sys.exit(1)
+
+        src_path = filename
+        idx_path = os.path.join(index_dir, filename)
+
+        if os.path.isfile(src_path):
+            # Case A: file exists in working directory → stage it
+            os.makedirs(os.path.dirname(idx_path), exist_ok=True)
+            try:
+                shutil.copy2(src_path, idx_path)
+            except Exception:
+                print(f"mygit-add: error: could not add {filename}")
+                sys.exit(1)
+
+        elif os.path.isfile(idx_path):
+            # Case B: file missing in working directory but exists in index → stage deletion
+            try:
+                os.remove(idx_path)
+            except Exception:
+                print(f"mygit-add: error: could not remove {filename} from index")
+                sys.exit(1)
+
+        else:
+            # Case C: file neither in working directory nor index → error
+            print(f"mygit-add: error: can not open '{filename}'")
+            sys.exit(1)
+
+    # Update the index directory timestamp to signal a change for commits
+    try:
+        os.utime(index_dir, None)
+    except Exception:
+        # Create index_dir first if it doesn't exist
+        os.makedirs(index_dir, exist_ok=True)
+        os.utime(index_dir, None)
+
+if __name__ == '__main__':
+    main()

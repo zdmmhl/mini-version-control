@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+mygit-status: Show status of files in working directory, index, and repository.
+
+Usage: mygit-status
+"""
+import os
+import sys
+
+
+def read_files(base):
+    """
+    Return a set of relative file paths under the given base directory (recursive).
+    If base is None or not a directory, return an empty set.
+    """
+    files = set()
+    if base and os.path.isdir(base):
+        for root, _, filenames in os.walk(base):
+            for name in filenames:
+                rel = os.path.relpath(os.path.join(root, name), base)
+                files.add(rel)
+    return files
+
+
+def read_bytes(path):
+    """
+    Read file content as bytes; return None if the file does not exist or cannot be read.
+    """
+    try:
+        with open(path, 'rb') as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def iter_working_files():
+    """
+    Iterate all regular files in the working directory (recursive), skipping .mygit/.
+    Return a set of relative paths.
+    """
+    out = set()
+    for root, _, filenames in os.walk('.'):
+        rel_root = os.path.relpath(root, '.')
+        parts = rel_root.split(os.sep)
+        if parts and parts[0] == '.mygit':
+            continue
+        for name in filenames:
+            rel = os.path.relpath(os.path.join(root, name), '.')
+            if rel.startswith('.mygit' + os.sep):
+                continue
+            out.add(rel)
+    return out
+
+
+def resolve_repo_snapshot(repo_dir):
+    """
+    Resolve the commit directory that represents the current repository snapshot.
+
+    Preference order:
+      1. HEAD -> branches/<HEAD> -> commit id
+      2. Fallback: latest commit number under .mygit/commits (max numeric)
+      3. None if no commits exist yet
+    """
+    commits_dir  = os.path.join(repo_dir, 'commits')
+    branches_dir = os.path.join(repo_dir, 'branches')
+    head_file    = os.path.join(repo_dir, 'HEAD')
+
+    commit_id = ''
+
+    # Try HEAD first
+    try:
+        with open(head_file, 'r', encoding='utf-8') as f:
+            head_branch = f.read().strip()
+    except Exception:
+        head_branch = ''
+
+    if head_branch:
+        branch_ref = os.path.join(branches_dir, head_branch)
+        try:
+            with open(branch_ref, 'r', encoding='utf-8') as f:
+                commit_id = f.read().strip()
+        except Exception:
+            commit_id = ''
+
+    if commit_id:
+        return os.path.join(commits_dir, commit_id)
+
+    # Fallback to the latest commit number
+    if os.path.isdir(commits_dir):
+        nums = [int(n) for n in os.listdir(commits_dir) if n.isdigit()]
+        if nums:
+            return os.path.join(commits_dir, str(max(nums)))
+
+    return None
+
+
+def main():
+    # 1. Usage
+    if len(sys.argv) != 1:
+        print('usage: mygit-status')
+        sys.exit(1)
+
+    # 2. Repository check
+    repo_dir = '.mygit'
+    if not os.path.isdir(repo_dir):
+        print('mygit-status: error: mygit repository directory .mygit not found')
+        sys.exit(1)
+
+    # 3. Paths
+    index_dir   = os.path.join(repo_dir, 'index')
+    commits_dir = os.path.join(repo_dir, 'commits')
+
+    # 4. Resolve the repo snapshot for CURRENT branch (with fallback)
+    repo_commit_dir = resolve_repo_snapshot(repo_dir)
+
+    # 5. Gather file sets
+    committed = read_files(repo_commit_dir)
+    committed.discard('message')   # ignore the commit message file
+    staged    = read_files(index_dir)
+    working   = iter_working_files()
+
+    all_files = committed | staged | working
+
+    # 6. Status for each file (order of rules matters)
+    for f in sorted(all_files):
+        commit_path = os.path.join(repo_commit_dir, f) if repo_commit_dir else None
+        commit_data = read_bytes(commit_path) if commit_path else None
+        staged_path = os.path.join(index_dir, f)
+        staged_data = read_bytes(staged_path)
+        work_data   = read_bytes(f)
+
+        commit_has = commit_data is not None
+        staged_has = staged_data is not None
+        work_has   = work_data   is not None
+
+        # Rule 1: repo has it but index does not -> "deleted from index"
+        # If the working file is also gone, append "file deleted".
+        if commit_has and not staged_has:
+            if not work_has:
+                status = 'file deleted, deleted from index'
+            else:
+                status = 'deleted from index'
+
+        # Rule 2: if working tree exactly matches repo snapshot -> "same as repo"
+        elif commit_has and work_has and work_data == commit_data:
+            status = 'same as repo'
+
+        # Rule 3: repo + index both have the file
+        elif commit_has and staged_has:
+            if staged_data != commit_data:
+                if work_has and work_data != staged_data:
+                    status = 'file changed, different changes staged for commit'
+                else:
+                    status = 'file changed, changes staged for commit'
+            else:
+                if not work_has:
+                    status = 'file deleted'
+                elif work_data != commit_data:
+                    status = 'file changed, changes not staged for commit'
+                else:
+                    status = 'same as repo'
+
+        # Rule 4: only in index (new file staged, not in repo)
+        elif not commit_has and staged_has:
+            if not work_has:
+                status = 'added to index, file deleted'
+            elif staged_data != work_data:
+                status = 'added to index, file changed'
+            else:
+                status = 'added to index'
+
+        # Rule 5: only in working tree
+        else:
+            status = 'untracked'
+
+        print(f'{f} - {status}')
+
+
+if __name__ == '__main__':
+    main()

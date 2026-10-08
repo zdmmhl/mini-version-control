@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""
+mygit-branch: Create, delete, or list branches in MyGit.
+
+Usage: mygit-branch [-d] [branch-name]
+"""
+import os
+import sys
+
+def main():
+    # 1. Usage check
+    if len(sys.argv) > 3:
+        print('usage: mygit-branch [-d] [branch-name]')
+        sys.exit(1)
+
+    # 2. Ensure repository exists
+    repo_dir   = '.mygit'
+    commits_dir = os.path.join(repo_dir, 'commits')
+    if not os.path.isdir(repo_dir):
+        print('mygit-branch: error: mygit repository directory .mygit not found')
+        sys.exit(1)
+
+    # 3. Prevent running before first commit
+    if not os.path.isdir(commits_dir) or not any(name.isdigit() for name in os.listdir(commits_dir)):
+        print('mygit-branch: error: this command can not be run until after the first commit')
+        sys.exit(1)
+
+    # 4. Parse options
+    args   = sys.argv[1:]
+    delete = False
+    if args and args[0] == '-d':
+        delete = True
+        args = args[1:]
+    if len(args) > 1:
+        print('usage: mygit-branch [-d] [branch-name]')
+        sys.exit(1)
+
+    # 5. Initialize branches directory and default trunk branch once
+    branches_dir = os.path.join(repo_dir, 'branches')
+    head_file    = os.path.join(repo_dir, 'HEAD')
+    if not os.path.isdir(branches_dir):
+        os.makedirs(branches_dir)
+    if not os.path.isfile(head_file):
+        # Point trunk to the latest commit
+        nums = [int(n) for n in os.listdir(commits_dir) if n.isdigit()]
+        current_commit = str(max(nums)) if nums else ''
+        # Create default branch 'trunk'
+        with open(os.path.join(branches_dir, 'trunk'), 'w') as f:
+            f.write(current_commit)
+        # Set HEAD to 'trunk'
+        with open(head_file, 'w') as f:
+            f.write('trunk')
+
+    # 6. Read current branch from HEAD
+    with open(head_file) as f:
+        current_branch = f.read().strip()
+
+    # 7. No branch name: list all branches
+    if not args:
+        for b in sorted(os.listdir(branches_dir)):
+            print(b)
+        return
+
+    branch = args[0]
+    branch_ref = os.path.join(branches_dir, branch)
+
+    # 8. Delete a branch
+    if delete:
+        # Cannot delete default branch trunk
+        if branch == 'trunk':
+            print(f"mygit-branch: error: can not delete branch '{branch}': default branch")
+            sys.exit(1)
+        # Branch must exist
+        if not os.path.isfile(branch_ref):
+            print(f"mygit-branch: error: branch '{branch}' doesn't exist")
+            sys.exit(1)
+        # Perform deletion
+        os.remove(branch_ref)
+        print(f"Deleted branch '{branch}'")
+        return
+
+    # 9. Create a branch
+    # Error if branch already exists
+    if os.path.isfile(branch_ref):
+        print(f"mygit-branch: error: branch '{branch}' already exists")
+        sys.exit(1)
+
+    # Read commit that current branch points to
+    curr_ref = os.path.join(branches_dir, current_branch)
+    try:
+        with open(curr_ref) as f:
+            commit_num = f.read().strip()
+    except:
+        commit_num = ''
+
+    # Write new branch file
+    with open(branch_ref, 'w') as f:
+        f.write(commit_num)
+    # No output on successful creation
+
+if __name__ == '__main__':
+    main()
